@@ -1,14 +1,23 @@
 package store
-import("database/sql";"fmt";"os";"path/filepath";"time";_ "modernc.org/sqlite")
-type DB struct{*sql.DB}
-type Service struct{ID int64 `json:"id"`;Name string `json:"name"`;BlueURL string `json:"blue_url"`;GreenURL string `json:"green_url"`;ActiveSlot string `json:"active_slot"`;SplitPercent int `json:"split_percent"`;CreatedAt time.Time `json:"created_at"`}
-type Cutover struct{ID int64 `json:"id"`;ServiceID int64 `json:"service_id"`;FromSlot string `json:"from_slot"`;ToSlot string `json:"to_slot"`;Reason string `json:"reason"`;CreatedAt time.Time `json:"created_at"`}
-func Open(d string)(*DB,error){os.MkdirAll(d,0755);dsn:=filepath.Join(d,"switchman.db")+"?_journal_mode=WAL&_busy_timeout=5000";db,err:=sql.Open("sqlite",dsn);if err!=nil{return nil,fmt.Errorf("open: %w",err)};db.SetMaxOpenConns(1);migrate(db);return &DB{db},nil}
-func migrate(db *sql.DB){db.Exec(`CREATE TABLE IF NOT EXISTS services(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,blue_url TEXT DEFAULT '',green_url TEXT DEFAULT '',active_slot TEXT DEFAULT 'blue',split_percent INTEGER DEFAULT 100,created_at DATETIME DEFAULT CURRENT_TIMESTAMP);CREATE TABLE IF NOT EXISTS cutovers(id INTEGER PRIMARY KEY AUTOINCREMENT,service_id INTEGER NOT NULL,from_slot TEXT NOT NULL,to_slot TEXT NOT NULL,reason TEXT DEFAULT '',created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`)}
-func(db *DB)Create(s *Service)error{res,err:=db.Exec(`INSERT INTO services(name,blue_url,green_url,active_slot,split_percent)VALUES(?,?,?,?,?)`,s.Name,s.BlueURL,s.GreenURL,s.ActiveSlot,s.SplitPercent);if err!=nil{return err};s.ID,_=res.LastInsertId();return nil}
-func(db *DB)List()([]Service,error){rows,_:=db.Query(`SELECT id,name,blue_url,green_url,active_slot,split_percent,created_at FROM services ORDER BY name`);defer rows.Close();var out[]Service;for rows.Next(){var s Service;rows.Scan(&s.ID,&s.Name,&s.BlueURL,&s.GreenURL,&s.ActiveSlot,&s.SplitPercent,&s.CreatedAt);out=append(out,s)};return out,nil}
-func(db *DB)Cutover(serviceID int64,toSlot,reason string){db.Exec(`INSERT INTO cutovers(service_id,from_slot,to_slot,reason)SELECT id,active_slot,?,? FROM services WHERE id=?`,toSlot,reason,serviceID);db.Exec(`UPDATE services SET active_slot=? WHERE id=?`,toSlot,serviceID)}
-func(db *DB)SetSplit(serviceID int64,pct int){db.Exec(`UPDATE services SET split_percent=? WHERE id=?`,pct,serviceID)}
-func(db *DB)ListCutovers(serviceID int64)([]Cutover,error){rows,_:=db.Query(`SELECT id,service_id,from_slot,to_slot,reason,created_at FROM cutovers WHERE service_id=? ORDER BY created_at DESC LIMIT 20`,serviceID);defer rows.Close();var out[]Cutover;for rows.Next(){var c Cutover;rows.Scan(&c.ID,&c.ServiceID,&c.FromSlot,&c.ToSlot,&c.Reason,&c.CreatedAt);out=append(out,c)};return out,nil}
-func(db *DB)Delete(id int64){db.Exec(`DELETE FROM cutovers WHERE service_id=?`,id);db.Exec(`DELETE FROM services WHERE id=?`,id)}
-func(db *DB)Stats()(map[string]interface{},error){var svc int;db.QueryRow(`SELECT COUNT(*) FROM services`).Scan(&svc);return map[string]interface{}{"services":svc},nil}
+import ("database/sql";"fmt";"os";"path/filepath";"time";_ "modernc.org/sqlite")
+type DB struct{db *sql.DB}
+type Item struct{
+	ID string `json:"id"`
+	Name string `json:"name"`
+	Description string `json:"description"`
+	Status string `json:"status"`
+	Category string `json:"category"`
+	Tags string `json:"tags"`
+	CreatedAt string `json:"created_at"`
+}
+func Open(d string)(*DB,error){if err:=os.MkdirAll(d,0755);err!=nil{return nil,err};db,err:=sql.Open("sqlite",filepath.Join(d,"switchman.db")+"?_journal_mode=WAL&_busy_timeout=5000");if err!=nil{return nil,err}
+db.Exec(`CREATE TABLE IF NOT EXISTS items(id TEXT PRIMARY KEY,name TEXT NOT NULL,description TEXT DEFAULT '',status TEXT DEFAULT 'active',category TEXT DEFAULT '',tags TEXT DEFAULT '',created_at TEXT DEFAULT(datetime('now')))`)
+return &DB{db:db},nil}
+func(d *DB)Close()error{return d.db.Close()}
+func genID()string{return fmt.Sprintf("%d",time.Now().UnixNano())}
+func now()string{return time.Now().UTC().Format(time.RFC3339)}
+func(d *DB)Create(e *Item)error{e.ID=genID();e.CreatedAt=now();_,err:=d.db.Exec(`INSERT INTO items(id,name,description,status,category,tags,created_at)VALUES(?,?,?,?,?,?,?)`,e.ID,e.Name,e.Description,e.Status,e.Category,e.Tags,e.CreatedAt);return err}
+func(d *DB)Get(id string)*Item{var e Item;if d.db.QueryRow(`SELECT id,name,description,status,category,tags,created_at FROM items WHERE id=?`,id).Scan(&e.ID,&e.Name,&e.Description,&e.Status,&e.Category,&e.Tags,&e.CreatedAt)!=nil{return nil};return &e}
+func(d *DB)List()[]Item{rows,_:=d.db.Query(`SELECT id,name,description,status,category,tags,created_at FROM items ORDER BY created_at DESC`);if rows==nil{return nil};defer rows.Close();var o []Item;for rows.Next(){var e Item;rows.Scan(&e.ID,&e.Name,&e.Description,&e.Status,&e.Category,&e.Tags,&e.CreatedAt);o=append(o,e)};return o}
+func(d *DB)Delete(id string)error{_,err:=d.db.Exec(`DELETE FROM items WHERE id=?`,id);return err}
+func(d *DB)Count()int{var n int;d.db.QueryRow(`SELECT COUNT(*) FROM items`).Scan(&n);return n}
